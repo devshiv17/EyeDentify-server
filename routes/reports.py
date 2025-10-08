@@ -1,11 +1,20 @@
 from flask import Blueprint, request, jsonify, send_file
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from datetime import datetime
 from models import Attendance, User, AttendanceReport
 import pandas as pd
 import os
 
 reports_bp = Blueprint('reports', __name__)
+
+def get_current_user():
+    """Helper function to get user ID and role from JWT"""
+    user_id = int(get_jwt_identity())
+    claims = get_jwt()
+    return {
+        'id': user_id,
+        'role': claims.get('role', 'user')
+    }
 
 @reports_bp.route('/generate', methods=['POST'])
 @jwt_required()
@@ -15,7 +24,7 @@ def generate_report():
     Body: {month: int, year: int, format: 'csv'|'excel'|'pdf'}
     Returns: {report_id, download_url}
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
@@ -66,7 +75,7 @@ def download_report(report_id):
     """
     Download generated report (admin only)
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
@@ -92,7 +101,7 @@ def get_reports():
     Get list of generated reports (admin only)
     Query params: limit
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
@@ -109,7 +118,7 @@ def delete_report(report_id):
     """
     Delete report (admin only)
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
@@ -136,7 +145,7 @@ def get_monthly_summary():
     Query params: month, year
     Returns detailed statistics
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403

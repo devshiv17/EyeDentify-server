@@ -1,58 +1,51 @@
 import cv2
-import dlib
 import numpy as np
 import pickle
 import os
-from sklearn.neighbors import KNeighborsClassifier
+import face_recognition
 from database import db
 from models import User
 
 class FaceRecognitionService:
     """
-    Face recognition service using OpenCV and Dlib
-    Uses face_recognition library's approach with dlib's face detector and encoder
+    Face recognition using face_recognition library (dlib-based deep learning models)
+    Provides high accuracy face detection and recognition
     """
 
     def __init__(self):
-        self.face_detector = dlib.get_frontal_face_detector()
-        self.shape_predictor = dlib.shape_predictor('models/shape_predictor_68_face_landmarks.dat')
-        self.face_encoder = dlib.face_recognition_model_v1('models/dlib_face_recognition_resnet_model_v1.dat')
-        self.model = None
-        self.user_labels = {}
-        self.confidence_threshold = 0.6  # Adjust based on testing
-        self.model_path = 'models/face_recognition_model.pkl'
+        self.known_face_encodings = []
+        self.known_face_metadata = []  # Store user_id, full_name, employee_id
+        self.confidence_threshold = 0.6  # Distance threshold (lower = more strict)
+        self.model_path = 'models/face_encodings.pkl'
+        os.makedirs('models', exist_ok=True)
         self.load_model()
 
     def extract_face_encoding(self, image_path):
         """
-        Extract 128-dimensional face encoding from an image
-        Returns: numpy array of face encoding or None if no face detected
+        Extract face encoding from an image using dlib's deep learning model
+        Returns: 128-dimensional face encoding or None if no face detected
         """
         try:
             # Load image
-            image = cv2.imread(image_path)
-            if image is None:
+            image = face_recognition.load_image_file(image_path)
+
+            # Find all face locations and encodings in the image
+            # model can be 'hog' (faster) or 'cnn' (more accurate, requires GPU)
+            face_locations = face_recognition.face_locations(image, model='hog')
+
+            if len(face_locations) == 0:
+                print("No face detected in image")
                 return None
 
-            # Convert to RGB (dlib uses RGB)
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            # Get encoding for the first face
+            face_encodings = face_recognition.face_encodings(image, face_locations)
 
-            # Detect faces
-            faces = self.face_detector(rgb_image, 1)
-
-            if len(faces) == 0:
+            if len(face_encodings) == 0:
+                print("Could not generate encoding for detected face")
                 return None
 
-            # Use the first detected face
-            face = faces[0]
-
-            # Get facial landmarks
-            shape = self.shape_predictor(rgb_image, face)
-
-            # Compute face encoding (128D vector)
-            face_encoding = self.face_encoder.compute_face_descriptor(rgb_image, shape)
-
-            return np.array(face_encoding)
+            # Return the first face encoding (128-dimensional vector)
+            return face_encodings[0]
 
         except Exception as e:
             print(f"Error extracting face encoding: {str(e)}")
@@ -60,8 +53,7 @@ class FaceRecognitionService:
 
     def retrain_model(self):
         """
-        Retrain the face recognition model with all stored face encodings
-        Uses KNN classifier for fast recognition
+        Reload all face encodings from database
         """
         try:
             # Get all facial encodings from database
@@ -71,8 +63,8 @@ class FaceRecognitionService:
                 print("No facial encodings found for training")
                 return False
 
-            X = []  # Face encodings
-            y = []  # User IDs
+            self.known_face_encodings = []
+            self.known_face_metadata = []
 
             for item in encodings_data:
                 user_id = item['user_id']
@@ -80,33 +72,18 @@ class FaceRecognitionService:
 
                 # Deserialize numpy array
                 encoding = pickle.loads(encoding_bytes)
-                X.append(encoding)
-                y.append(user_id)
 
-                # Store user label mapping
-                if user_id not in self.user_labels:
-                    self.user_labels[user_id] = {
-                        'full_name': item['full_name'],
-                        'employee_id': item['employee_id']
-                    }
+                self.known_face_encodings.append(encoding)
+                self.known_face_metadata.append({
+                    'user_id': user_id,
+                    'full_name': item['full_name'],
+                    'employee_id': item['employee_id']
+                })
 
-            X = np.array(X)
-            y = np.array(y)
-
-            # Train KNN classifier
-            # n_neighbors should be at least 3, but not more than number of samples
-            n_neighbors = min(5, len(X))
-            self.model = KNeighborsClassifier(
-                n_neighbors=n_neighbors,
-                algorithm='ball_tree',
-                weights='distance'
-            )
-            self.model.fit(X, y)
-
-            # Save model
+            # Save to cache
             self.save_model()
 
-            print(f"Model trained successfully with {len(X)} face encodings from {len(set(y))} users")
+            print(f"Model trained successfully with {len(self.known_face_encodings)} face encodings from {len(set(item['user_id'] for item in self.known_face_metadata))} users")
             return True
 
         except Exception as e:
@@ -117,70 +94,77 @@ class FaceRecognitionService:
         """
         Identify a person from an image
         Args:
-            image: numpy array (OpenCV image)
+            image: numpy array (OpenCV image in BGR format) or path to image
         Returns:
-            dict: {
-                success: bool,
-                user_id: int,
-                full_name: str,
-                employee_id: str,
-                confidence: float,
-                message: str
-            }
+            dict: {success, user_id, full_name, employee_id, confidence, message}
         """
         try:
-            if self.model is None:
+            if len(self.known_face_encodings) == 0:
                 return {
                     'success': False,
                     'message': 'Face recognition model not trained'
                 }
 
-            # Convert to RGB
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            # Convert from BGR to RGB (face_recognition uses RGB)
+            if isinstance(image, np.ndarray):
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                rgb_image = face_recognition.load_image_file(image)
 
-            # Detect faces
-            faces = self.face_detector(rgb_image, 1)
+            # Find all face locations and encodings
+            face_locations = face_recognition.face_locations(rgb_image, model='hog')
 
-            if len(faces) == 0:
+            if len(face_locations) == 0:
                 return {
                     'success': False,
                     'message': 'No face detected in image'
                 }
 
-            # Use the first detected face
-            face = faces[0]
+            face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
 
-            # Get facial landmarks
-            shape = self.shape_predictor(rgb_image, face)
-
-            # Compute face encoding
-            face_encoding = self.face_encoder.compute_face_descriptor(rgb_image, shape)
-            face_encoding = np.array(face_encoding).reshape(1, -1)
-
-            # Predict using KNN
-            distances, indices = self.model.kneighbors(face_encoding, n_neighbors=1)
-            predicted_user_id = self.model.predict(face_encoding)[0]
-
-            # Calculate confidence (inverse of distance, normalized)
-            distance = distances[0][0]
-            confidence = 1 / (1 + distance)
-
-            # Check if confidence meets threshold
-            if confidence < self.confidence_threshold:
+            if len(face_encodings) == 0:
                 return {
                     'success': False,
-                    'message': f'Face not recognized with sufficient confidence (confidence: {confidence:.2f})'
+                    'message': 'Could not generate encoding for detected face'
+                }
+
+            # Use the first detected face
+            unknown_encoding = face_encodings[0]
+
+            # Compare with all known faces
+            face_distances = face_recognition.face_distance(self.known_face_encodings, unknown_encoding)
+
+            if len(face_distances) == 0:
+                return {
+                    'success': False,
+                    'message': 'No known faces to compare against'
+                }
+
+            # Find the best match
+            best_match_index = np.argmin(face_distances)
+            best_distance = face_distances[best_match_index]
+
+            # Convert distance to confidence (0-1 scale, higher is better)
+            # face_distance returns euclidean distance, typical threshold is 0.6
+            confidence = 1 - best_distance
+
+            # Check if confidence meets threshold
+            if best_distance > self.confidence_threshold:
+                return {
+                    'success': False,
+                    'message': f'Face not recognized with sufficient confidence (distance: {best_distance:.2f}, threshold: {self.confidence_threshold})'
                 }
 
             # Get user information
-            user_info = self.user_labels.get(predicted_user_id)
+            user_info = self.known_face_metadata[best_match_index]
 
             return {
                 'success': True,
-                'user_id': int(predicted_user_id),
+                'user_id': int(user_info['user_id']),
                 'full_name': user_info['full_name'],
                 'employee_id': user_info['employee_id'],
-                'confidence': float(confidence)
+                'confidence': float(confidence),
+                'distance': float(best_distance)
             }
 
         except Exception as e:
@@ -190,13 +174,12 @@ class FaceRecognitionService:
             }
 
     def save_model(self):
-        """Save the trained model to disk"""
+        """Save the known face encodings to disk"""
         try:
-            os.makedirs('models', exist_ok=True)
             with open(self.model_path, 'wb') as f:
                 pickle.dump({
-                    'model': self.model,
-                    'user_labels': self.user_labels
+                    'encodings': self.known_face_encodings,
+                    'metadata': self.known_face_metadata
                 }, f)
             return True
         except Exception as e:
@@ -204,14 +187,14 @@ class FaceRecognitionService:
             return False
 
     def load_model(self):
-        """Load the trained model from disk"""
+        """Load the known face encodings from disk"""
         try:
             if os.path.exists(self.model_path):
                 with open(self.model_path, 'rb') as f:
                     data = pickle.load(f)
-                    self.model = data['model']
-                    self.user_labels = data['user_labels']
-                print("Model loaded successfully")
+                    self.known_face_encodings = data['encodings']
+                    self.known_face_metadata = data['metadata']
+                print(f"Model loaded successfully with {len(self.known_face_encodings)} encodings")
                 return True
             else:
                 print("No saved model found")
@@ -223,13 +206,24 @@ class FaceRecognitionService:
     def detect_and_draw_faces(self, image):
         """
         Detect faces and draw bounding boxes (for testing/debugging)
-        Returns: image with drawn boxes
+        Args:
+            image: numpy array (OpenCV image in BGR format)
+        Returns: image with drawn boxes and labels
         """
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        faces = self.face_detector(rgb_image, 1)
+        try:
+            # Convert from BGR to RGB
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        for face in faces:
-            x1, y1, x2, y2 = face.left(), face.top(), face.right(), face.bottom()
-            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # Find all face locations
+            face_locations = face_recognition.face_locations(rgb_image, model='hog')
 
-        return image
+            # Draw rectangles around faces
+            for (top, right, bottom, left) in face_locations:
+                # Draw box
+                cv2.rectangle(image, (left, top), (right, bottom), (0, 255, 0), 2)
+
+            return image
+
+        except Exception as e:
+            print(f"Error detecting faces: {str(e)}")
+            return image
