@@ -96,6 +96,18 @@ class Attendance:
     """Attendance model for database operations"""
 
     @staticmethod
+    def _convert_decimals(record):
+        """Convert Decimal fields to float for JSON serialization"""
+        if record and 'total_hours' in record and record['total_hours'] is not None:
+            record['total_hours'] = float(record['total_hours'])
+        return record
+
+    @staticmethod
+    def _convert_decimals_list(records):
+        """Convert Decimal fields to float for list of records"""
+        return [Attendance._convert_decimals(record) for record in records]
+
+    @staticmethod
     def create_attendance(user_id, date, entry_time=None, exit_time=None, status='present'):
         """Create attendance record"""
         query = """
@@ -135,7 +147,7 @@ class Attendance:
             JOIN users u ON a.user_id = u.id
             WHERE a.id = %s
         """
-        return db.fetch_one(query, (attendance_id,))
+        return Attendance._convert_decimals(db.fetch_one(query, (attendance_id,)))
 
     @staticmethod
     def get_user_attendance(user_id, start_date=None, end_date=None, month=None, year=None):
@@ -156,13 +168,13 @@ class Attendance:
             params.extend([month, year])
 
         query += " ORDER BY a.date DESC"
-        return db.fetch_all(query, tuple(params))
+        return Attendance._convert_decimals_list(db.fetch_all(query, tuple(params)))
 
     @staticmethod
     def get_user_attendance_by_date(user_id, date):
         """Get attendance record for a user on a specific date"""
         query = "SELECT * FROM attendance WHERE user_id = %s AND date = %s"
-        return db.fetch_one(query, (user_id, date))
+        return Attendance._convert_decimals(db.fetch_one(query, (user_id, date)))
 
     @staticmethod
     def get_all_attendance(start_date=None, end_date=None, month=None, year=None):
@@ -183,7 +195,8 @@ class Attendance:
             params.extend([month, year])
 
         query += " ORDER BY a.date DESC, u.full_name"
-        return db.fetch_all(query, tuple(params)) if params else db.fetch_all(query)
+        results = db.fetch_all(query, tuple(params)) if params else db.fetch_all(query)
+        return Attendance._convert_decimals_list(results)
 
     @staticmethod
     def get_attendance_by_date(date):
@@ -195,7 +208,7 @@ class Attendance:
             WHERE a.date = %s
             ORDER BY u.full_name
         """
-        return db.fetch_all(query, (date,))
+        return Attendance._convert_decimals_list(db.fetch_all(query, (date,)))
 
     @staticmethod
     def delete_attendance(attendance_id):
@@ -220,14 +233,19 @@ class Attendance:
             AND EXTRACT(YEAR FROM date) = %s
         """
         result = db.fetch_one(query, (user_id, month, year))
-        return result if result else {
-            'total_days': 0,
-            'present_days': 0,
-            'absent_days': 0,
-            'late_days': 0,
-            'half_days': 0,
-            'avg_hours': 0
-        }
+        if result:
+            # Convert Decimal to float for avg_hours
+            result['avg_hours'] = float(result['avg_hours']) if result['avg_hours'] else 0.0
+            return result
+        else:
+            return {
+                'total_days': 0,
+                'present_days': 0,
+                'absent_days': 0,
+                'late_days': 0,
+                'half_days': 0,
+                'avg_hours': 0.0
+            }
 
 
 class RecognitionLog:

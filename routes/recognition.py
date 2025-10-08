@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from datetime import datetime, timedelta
 import cv2
 import numpy as np
@@ -10,6 +10,15 @@ import base64
 recognition_bp = Blueprint('recognition', __name__)
 
 face_service = FaceRecognitionService()
+
+def get_current_user():
+    """Helper function to get user ID and role from JWT"""
+    user_id = int(get_jwt_identity())
+    claims = get_jwt()
+    return {
+        'id': user_id,
+        'role': claims.get('role', 'user')
+    }
 
 @recognition_bp.route('/identify', methods=['POST'])
 def identify_face():
@@ -27,6 +36,10 @@ def identify_face():
     }
     """
     try:
+        # Reload model if not loaded
+        if len(face_service.known_face_encodings) == 0:
+            face_service.load_model()
+
         # Get image from request
         if 'image' in request.files:
             file = request.files['image']
@@ -149,7 +162,7 @@ def get_recognition_logs():
     Get recognition logs (admin only)
     Query params: user_id, start_date, end_date, status, limit
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
@@ -172,12 +185,16 @@ def test_recognition():
     Body: {image: base64_encoded_image} or multipart/form-data
     Returns: {success: bool, user_id: int, full_name: str, confidence: float}
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
 
     try:
+        # Reload model if not loaded
+        if len(face_service.known_face_encodings) == 0:
+            face_service.load_model()
+
         # Get image from request
         if 'image' in request.files:
             file = request.files['image']

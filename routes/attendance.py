@@ -1,9 +1,18 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from datetime import datetime, timedelta
 from models import Attendance
 
 attendance_bp = Blueprint('attendance', __name__)
+
+def get_current_user():
+    """Helper function to get user ID and role from JWT"""
+    user_id = int(get_jwt_identity())
+    claims = get_jwt()
+    return {
+        'id': user_id,
+        'role': claims.get('role', 'user')
+    }
 
 @attendance_bp.route('/', methods=['GET'])
 @jwt_required()
@@ -14,7 +23,7 @@ def get_attendance():
     Regular user: can only view their own attendance
     Query params: user_id, start_date, end_date, month, year
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     user_id = request.args.get('user_id', type=int)
     start_date = request.args.get('start_date')
@@ -40,7 +49,7 @@ def get_today_attendance():
     """
     Get today's attendance for current user or all users (admin)
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
     today = datetime.now().date()
 
     if current_user['role'] == 'admin':
@@ -58,17 +67,15 @@ def get_attendance_summary():
     Query params: user_id (admin only), month, year
     Returns: {total_days, present_days, absent_days, late_days, half_days}
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     user_id = request.args.get('user_id', type=int)
     month = request.args.get('month', type=int, default=datetime.now().month)
     year = request.args.get('year', type=int, default=datetime.now().year)
 
-    if current_user['role'] != 'admin':
-        user_id = current_user['id']
-
+    # If no user_id specified, use current user's id
     if not user_id:
-        return jsonify({'error': 'user_id required'}), 400
+        user_id = current_user['id']
 
     summary = Attendance.get_attendance_summary(user_id, month, year)
 
@@ -80,7 +87,7 @@ def get_attendance_by_id(attendance_id):
     """
     Get specific attendance record by ID
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     record = Attendance.get_attendance_by_id(attendance_id)
 
@@ -100,7 +107,7 @@ def mark_attendance():
     Manually mark attendance (admin only)
     Body: {user_id, date, entry_time, exit_time, status}
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
@@ -131,7 +138,7 @@ def update_attendance(attendance_id):
     Update attendance record (admin only)
     Body: {entry_time, exit_time, status}
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
@@ -148,7 +155,7 @@ def delete_attendance(attendance_id):
     """
     Delete attendance record (admin only)
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin':
         return jsonify({'error': 'Admin access required'}), 403

@@ -7,13 +7,24 @@ class Database:
     """PostgreSQL database connection and operations"""
 
     def __init__(self):
+        db_host = os.environ.get('DB_HOST', 'localhost')
+        db_password = os.environ.get('DB_PASSWORD', '')
+
         self.config = {
-            'host': os.environ.get('DB_HOST', 'localhost'),
-            'port': os.environ.get('DB_PORT', '5432'),
             'database': os.environ.get('DB_NAME', 'attendance_db'),
-            'user': os.environ.get('DB_USER', 'postgres'),
-            'password': os.environ.get('DB_PASSWORD', 'postgres')
+            'user': os.environ.get('DB_USER', 'postgres')
         }
+
+        # Only add host/port if not using Unix socket
+        if not db_host.startswith('/'):
+            self.config['host'] = db_host
+            self.config['port'] = os.environ.get('DB_PORT', '5432')
+        else:
+            self.config['host'] = db_host
+
+        # Only add password if it's provided
+        if db_password:
+            self.config['password'] = db_password
 
     @contextmanager
     def get_connection(self):

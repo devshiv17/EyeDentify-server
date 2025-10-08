@@ -1,25 +1,34 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
 import os
+import psycopg2
 from database import db
 from models import User
 from services.face_recognition_service import FaceRecognitionService
 
 users_bp = Blueprint('users', __name__)
 
-def admin_required():
+def get_current_user():
+    """Helper function to get user ID and role from JWT"""
+    user_id = int(get_jwt_identity())
+    claims = get_jwt()
+    return {
+        'id': user_id,
+        'role': claims.get('role', 'user')
+    }
+
+def admin_required(fn):
     """Decorator to check if user is admin"""
-    def wrapper(fn):
-        @jwt_required()
-        def decorator(*args, **kwargs):
-            current_user = get_jwt_identity()
-            if current_user['role'] != 'admin':
-                return jsonify({'error': 'Admin access required'}), 403
-            return fn(*args, **kwargs)
-        return decorator
-    return wrapper
+    @jwt_required()
+    def decorated_function(*args, **kwargs):
+        claims = get_jwt()
+        if claims.get('role') != 'admin':
+            return jsonify({'error': 'Admin access required'}), 403
+        return fn(*args, **kwargs)
+    decorated_function.__name__ = fn.__name__
+    return decorated_function
 
 @users_bp.route('/', methods=['GET'])
 @jwt_required()
@@ -28,7 +37,7 @@ def get_users():
     Get all users (admin only) or current user info
     Returns: [{id, username, full_name, email, role, employee_id, is_active}]
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] == 'admin':
         users = User.get_all_users()
@@ -47,7 +56,7 @@ def get_user(user_id):
     Admin: can view any user
     Regular user: can only view themselves
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin' and current_user['id'] != user_id:
         return jsonify({'error': 'Unauthorized'}), 403
@@ -59,8 +68,7 @@ def get_user(user_id):
     return jsonify({'user': user}), 200
 
 @users_bp.route('/', methods=['POST'])
-@admin_required()
-@jwt_required()
+@admin_required
 def create_user():
     """
     Create new user (admin only)
@@ -79,22 +87,40 @@ def create_user():
     if User.find_by_email(data['email']):
         return jsonify({'error': 'Email already exists'}), 409
 
+    # Check if employee_id already exists
+    if User.find_by_employee_id(data['employee_id']):
+        return jsonify({'error': 'Employee ID already exists'}), 409
+
     password_hash = generate_password_hash(data['password'])
     role = data.get('role', 'user')
 
-    user_id = User.create_user(
-        username=data['username'],
-        email=data['email'],
-        password_hash=password_hash,
-        full_name=data['full_name'],
-        employee_id=data['employee_id'],
-        role=role
-    )
+    try:
+        user_id = User.create_user(
+            username=data['username'],
+            email=data['email'],
+            password_hash=password_hash,
+            full_name=data['full_name'],
+            employee_id=data['employee_id'],
+            role=role
+        )
 
-    return jsonify({
-        'message': 'User created successfully',
-        'user_id': user_id
-    }), 201
+        return jsonify({
+            'message': 'User created successfully',
+            'user_id': user_id
+        }), 201
+    except psycopg2.errors.UniqueViolation as e:
+        # Catch any unique constraint violations
+        error_msg = str(e)
+        if 'employee_id' in error_msg:
+            return jsonify({'error': 'Employee ID already exists'}), 409
+        elif 'username' in error_msg:
+            return jsonify({'error': 'Username already exists'}), 409
+        elif 'email' in error_msg:
+            return jsonify({'error': 'Email already exists'}), 409
+        else:
+            return jsonify({'error': 'Duplicate entry detected'}), 409
+    except Exception as e:
+        return jsonify({'error': f'Error creating user: {str(e)}'}), 500
 
 @users_bp.route('/<int:user_id>', methods=['PUT'])
 @jwt_required()
@@ -104,7 +130,7 @@ def update_user(user_id):
     Admin: can update any user
     Regular user: can only update themselves (limited fields)
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['role'] != 'admin' and current_user['id'] != user_id:
         return jsonify({'error': 'Unauthorized'}), 403
@@ -125,13 +151,12 @@ def update_user(user_id):
     return jsonify({'message': 'User updated successfully'}), 200
 
 @users_bp.route('/<int:user_id>', methods=['DELETE'])
-@admin_required()
-@jwt_required()
+@admin_required
 def delete_user(user_id):
     """
     Deactivate user (admin only)
     """
-    current_user = get_jwt_identity()
+    current_user = get_current_user()
 
     if current_user['id'] == user_id:
         return jsonify({'error': 'Cannot deactivate yourself'}), 400
@@ -141,8 +166,7 @@ def delete_user(user_id):
     return jsonify({'message': 'User deactivated successfully'}), 200
 
 @users_bp.route('/<int:user_id>/photos', methods=['POST'])
-@admin_required()
-@jwt_required()
+@admin_required
 def upload_user_photos(user_id):
     """
     Upload facial photos for a user and train the recognition model (admin only)
