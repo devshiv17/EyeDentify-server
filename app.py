@@ -1,11 +1,30 @@
 from flask import Flask, request, jsonify
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, timezone
 import os
 
+class CustomJSONProvider(DefaultJSONProvider):
+    """Custom JSON provider to handle date/datetime serialization"""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            # If datetime is timezone-naive, assume it's stored in IST and convert to UTC
+            if obj.tzinfo is None:
+                # IST is UTC+5:30
+                ist_offset = timedelta(hours=5, minutes=30)
+                # Treat naive datetime as IST, convert to UTC
+                obj = obj - ist_offset
+                obj = obj.replace(tzinfo=timezone.utc)
+            return obj.isoformat()
+        elif isinstance(obj, date):
+            # Convert date to ISO format string
+            return obj.isoformat()
+        return super().default(obj)
+
 app = Flask(__name__)
+app.json = CustomJSONProvider(app)
 app.url_map.strict_slashes = False  # Allow URLs with or without trailing slashes
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'jwt-secret-key-change-in-production')

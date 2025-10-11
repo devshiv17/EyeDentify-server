@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import cv2
 import numpy as np
 from services.face_recognition_service import FaceRecognitionService
@@ -91,7 +91,7 @@ def identify_face():
             'full_name': full_name,
             'employee_id': employee_id,
             'attendance_type': attendance_result['type'],
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'confidence': confidence,
             'message': attendance_result['message']
         }), 200
@@ -109,8 +109,13 @@ def mark_user_attendance(user_id):
     - Last detection of the day: exit time (updates existing record)
     - Middle detections: ignored
     """
-    today = datetime.now().date()
-    current_time = datetime.now()
+    # Use UTC for storing times, but IST for determining "today"
+    now_utc = datetime.now(timezone.utc)
+    current_time = now_utc
+
+    # Calculate today's date in IST (UTC+5:30)
+    ist_offset = timedelta(hours=5, minutes=30)
+    today = (now_utc + ist_offset).date()
 
     # Check if attendance record exists for today
     existing_record = Attendance.get_user_attendance_by_date(user_id, today)
@@ -140,6 +145,13 @@ def mark_user_attendance(user_id):
         entry_time = existing_record['entry_time']
         if isinstance(entry_time, str):
             entry_time = datetime.fromisoformat(entry_time)
+
+        # Ensure entry_time has timezone info
+        if entry_time.tzinfo is None:
+            # Naive datetime is stored in IST, convert to UTC
+            ist_offset = timedelta(hours=5, minutes=30)
+            entry_time = entry_time - ist_offset
+            entry_time = entry_time.replace(tzinfo=timezone.utc)
 
         total_hours = (current_time - entry_time).total_seconds() / 3600
 

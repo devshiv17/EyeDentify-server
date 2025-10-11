@@ -4,10 +4,14 @@ Automatically detects and identifies people entering the office
 Marks attendance with cooldown to prevent duplicates
 """
 
+# Load environment variables first
+from dotenv import load_dotenv
+load_dotenv()
+
 import cv2
 import numpy as np
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from services.face_recognition_service import FaceRecognitionService
 from models import Attendance
 from database import db
@@ -98,20 +102,64 @@ class EntranceMonitor:
                 print(f"User {full_name} is in cooldown. {int(remaining)}s remaining")
                 return False, f"Cooldown active: {int(remaining)}s remaining"
 
-            # Mark attendance in database
-            success, message = Attendance.mark_attendance(user_id)
+            # Use UTC for storing times, but IST for determining "today"
+            now_utc = datetime.now(timezone.utc)
+            current_time = now_utc
 
-            if success:
-                # Update last recognition time
-                self.last_recognition[user_id] = datetime.now()
-                print(f"✓ Attendance marked for {full_name} ({employee_id})")
-                return True, "Attendance marked successfully"
+            # Calculate today's date in IST (UTC+5:30)
+            ist_offset = timedelta(hours=5, minutes=30)
+            today = (now_utc + ist_offset).date()
+
+            # Check if attendance record exists for today
+            existing_record = Attendance.get_user_attendance_by_date(user_id, today)
+
+            if not existing_record:
+                # First detection of the day - mark entry
+                attendance_id = Attendance.create_attendance(
+                    user_id=user_id,
+                    date=today,
+                    entry_time=current_time,
+                    status='present'
+                )
+                message = 'Entry time recorded'
+                attendance_type = 'entry'
             else:
-                print(f"✗ Failed to mark attendance for {full_name}: {message}")
-                return False, message
+                # Update exit time (will be updated with each subsequent detection)
+                Attendance.update_attendance(
+                    existing_record['id'],
+                    {'exit_time': current_time}
+                )
+
+                # Calculate total hours
+                entry_time = existing_record['entry_time']
+                if isinstance(entry_time, str):
+                    entry_time = datetime.fromisoformat(entry_time)
+
+                # Ensure entry_time has timezone info
+                if entry_time.tzinfo is None:
+                    # Naive datetime is stored in IST, convert to UTC
+                    entry_time = entry_time - ist_offset
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+
+                total_hours = (current_time - entry_time).total_seconds() / 3600
+
+                Attendance.update_attendance(
+                    existing_record['id'],
+                    {'total_hours': round(total_hours, 2)}
+                )
+
+                message = f'Exit time updated ({round(total_hours, 2)} hrs)'
+                attendance_type = 'exit'
+
+            # Update last recognition time
+            self.last_recognition[user_id] = datetime.now()
+            print(f"✓ Attendance marked for {full_name} ({employee_id}) - {message}")
+            return True, message
 
         except Exception as e:
             print(f"Error marking attendance: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False, str(e)
 
     def draw_face_box(self, frame, face_location, label, color, sub_label=None):

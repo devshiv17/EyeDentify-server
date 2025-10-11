@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from models import Attendance
 
 attendance_bp = Blueprint('attendance', __name__)
@@ -50,7 +50,9 @@ def get_today_attendance():
     Get today's attendance for current user or all users (admin)
     """
     current_user = get_current_user()
-    today = datetime.now().date()
+    # Get today's date in IST timezone (UTC+5:30)
+    ist_offset = timedelta(hours=5, minutes=30)
+    today = (datetime.now(timezone.utc) + ist_offset).date()
 
     if current_user['role'] == 'admin':
         records = Attendance.get_attendance_by_date(today)

@@ -1,0 +1,3 @@
+id,user_id,date,entry_time,exit_time,status,total_hours,created_at,updated_at,full_name,employee_id
+2,1,2025-10-08,2025-10-08 07:52:09.625966,2025-10-08 08:04:30.975129,present,0.21,2025-10-08 07:52:09.643373,2025-10-08 08:04:31.042019,System Administrator,EMP001
+1,1,2025-10-07,2025-10-07 22:48:29.052369,,present,,2025-10-07 22:48:29.077869,2025-10-07 22:48:29.077869,System Administrator,EMP001
